@@ -1,0 +1,270 @@
+import numpy as np
+import scipy.io
+import matplotlib.pyplot as plt
+from sklearn.decomposition import PCA
+from sklearn.model_selection import train_test_split
+from keras.utils import to_categorical
+!wget http://www.ehu.eus/ccwintco/uploads/6/67/Indian_pines_corrected.mat http://www.ehu.eus/ccwintco/uploads/c/c4/Indian_pines_gt.mat https://www.ehu.eus/ccwintco/uploads/2/22/Indian_pines.mat
+
+
+# Load Indian Pines data
+data = scipy.io.loadmat('Indian_pines_corrected.mat')['indian_pines_corrected']
+indian_pines_gt = scipy.io.loadmat('Indian_pines_gt.mat')['indian_pines_gt']
+
+
+# Define the number of principal components to keep
+n_components = 3
+
+
+# Apply PCA to reduce dimensionality
+pca = PCA(n_components=n_components)
+data_reduced = pca.fit_transform(data.reshape((-1, data.shape[2])))
+
+
+# Reshape the reduced data to maintain spatial information
+data_reduced_reshaped = data_reduced.reshape(data.shape[0], data.shape[1], n_components)
+
+
+# Visualize the first principal component
+component_to_visualize = 0
+plt.imshow(data_reduced_reshaped[:, :, component_to_visualize], cmap='gray')
+plt.title(f'Indian Pines - Principal Component {component_to_visualize+1}')
+plt.colorbar()
+plt.show()
+
+
+print("Data shape:", data.shape)
+print("Ground truth shape:", indian_pines_gt.shape)
+
+
+from scipy.ndimage import rotate
+
+
+def extract_patches(data, labels, patch_size=5, augment=True):
+    half_patch = patch_size // 2
+    padded_data = np.pad(data, ((half_patch, half_patch), (half_patch, half_patch), (0, 0)), mode='constant')
+    padded_labels = np.pad(labels, ((half_patch, half_patch), (half_patch, half_patch)), mode='constant')
+    patches = []
+    patch_labels = []
+    for i in range(half_patch, data.shape[0] + half_patch):
+        for j in range(half_patch, data.shape[1] + half_patch):
+            patch = padded_data[i-half_patch:i+half_patch+1, j-half_patch:j+half_patch+1, :]
+            patches.append(patch)
+            if augment:
+                patches.append(np.flip(patch, 0))
+                patches.append(np.flip(patch, 1))
+                patches.append(rotate(patch, 90, reshape=False))
+                patches.append(rotate(patch, -90, reshape=False))
+            patch_label_area = padded_labels[i-half_patch:i+half_patch+1, j-half_patch:j+half_patch+1]
+            mode_label = np.bincount(patch_label_area.flatten()).argmax()
+            patch_labels.append(mode_label)
+            if augment:
+                patch_labels += [mode_label] * 4
+    return np.array(patches), np.array(patch_labels)
+
+
+patch_size = 5
+patches, patch_labels = extract_patches(data_reduced_reshaped, indian_pines_gt, patch_size=patch_size, augment=True)
+
+
+# Filter out the background pixels (label 0)
+valid_indices = patch_labels != 0
+patches = patches[valid_indices]
+patch_labels = patch_labels[valid_indices] - 1  # Ensure labels start from 0
+
+
+# One-hot encode the labels
+patch_labels = to_categorical(patch_labels)
+
+
+
+
+
+# Split the dataset into training, validation, and testing sets
+X_train, X_temp, y_train, y_temp = train_test_split(patches, patch_labels, test_size=0.3, random_state=42, stratify=patch_labels)
+X_val, X_test, y_val, y_test = train_test_split(X_temp, y_temp, test_size=0.5, random_state=42, stratify=y_temp)
+
+
+print(f"Training set: {X_train.shape}, {y_train.shape}")
+print(f"Validation set: {X_val.shape}, {y_val.shape}")
+print(f"Test set: {X_test.shape}, {y_test.shape}")
+
+
+
+from keras.models import Model
+from keras.layers import Dense, Conv2D, MaxPooling2D, Flatten, Input, concatenate, Add, BatchNormalization, Dropout
+from keras import optimizers
+
+
+def build_hsi_cnn(input_shape, num_classes):
+    input1 = Input(shape=input_shape, name='Indian_Pines_Input')
+    filter11 = Conv2D(128, (5, 5), activation='relu')(input1)
+    filter12 = Conv2D(128, (2, 2), activation='relu')(input1)
+    filter12 = MaxPooling2D((3, 3))(filter12)
+    filter13 = Conv2D(128, (1, 1), activation='relu')(input1)
+    filter13 = MaxPooling2D((5, 5))(filter13)
+    conc1 = concatenate([filter11, filter12, filter13])
+
+
+    shared_conv1 = Conv2D(128, (1, 1), activation='relu', padding='same')
+    model1 = shared_conv1(conc1)
+    shared_bn1 = BatchNormalization()
+    model1 = shared_bn1(model1)
+
+
+    shared_conv2 = Conv2D(128, (1, 1), activation='relu', padding='same')
+    model11 = shared_conv2(model1)
+    shared_bn2 = BatchNormalization()
+    model11 = shared_bn2(model11)
+
+
+    shared_conv3 = Conv2D(128, (1, 1), activation='relu', padding='same')
+    model11 = shared_conv3(model11)
+    shared_bn3 = BatchNormalization()
+    model11 = shared_bn3(model11)
+
+
+    shared_add1 = Add()
+    model1 = shared_add1([model1, model11])
+
+
+    shared_conv4 = Conv2D(128, (1, 1), activation='relu', padding='same')
+    model1 = shared_conv4(model1)
+    shared_bn4 = BatchNormalization()
+    model1 = shared_bn4(model1)
+
+
+    shared_conv5 = Conv2D(128, (1, 1), activation='relu', padding='same')
+    model11 = shared_conv5(model11)
+    shared_bn5 = BatchNormalization()
+    model11 = shared_bn5(model11)
+
+
+    shared_conv6 = Conv2D(128, (1, 1), activation='relu', padding='same')
+    model11 = shared_conv6(model11)
+    shared_bn6 = BatchNormalization()
+    model11 = shared_bn6(model11)
+
+
+    shared_add2 = Add()
+    model1 = shared_add2([model1, model11])
+
+
+    # Indian Pines classification layers
+    model1 = Conv2D(128, (1, 1), activation='relu')(model1)
+    model1 = BatchNormalization()(model1)
+
+
+    model1 = Conv2D(128, (1, 1), activation='relu')(model1)
+    model1 = BatchNormalization()(model1)
+    model1 = Dropout(0.1)(model1)
+
+
+    model1 = Conv2D(num_classes, (1, 1), activation='relu')(model1)
+    model1 = BatchNormalization()(model1)
+    model1 = Dropout(0.1)(model1)
+
+
+    model1 = Flatten()(model1)
+    model1 = Dense(128, activation='relu')(model1)
+    model1 = Dense(num_classes, activation='softmax', name='Indian_Pines_Output')(model1)
+
+
+    model = Model(inputs=[input1], outputs=[model1])
+    return model
+
+
+input_shape = (patch_size, patch_size, n_components)
+num_classes = patch_labels.shape[-1]
+
+
+model = build_hsi_cnn(input_shape, num_classes)
+sgd = optimizers.SGD(learning_rate=0.0001, momentum=0.9)
+model.compile(optimizer=sgd, loss='categorical_crossentropy', metrics=['accuracy'])
+
+
+model.summary()
+
+
+
+
+# Train the model
+history = model.fit(X_train, y_train, epochs=50, batch_size=32, validation_data=(X_val, y_val))
+
+
+# Evaluate the model
+loss, accuracy = model.evaluate(X_test, y_test)
+print(f'Test accuracy: {accuracy:.4f}')
+
+
+
+
+
+
+# Plot training history
+names = [
+    'Alfalfa', 'Corn-notill', 'Corn-mintill', 'Corn', 'Grass-pasture', 'Grass-trees',
+    'Grass-pasture-mowed', 'Hay-windrowed', 'Oats', 'Soybean-notill', 'Soybean-mintill',
+    'Soybean-clean', 'Wheat', 'Woods', 'Buildings Grass Trees Drives', 'Stone Steel Towers'
+]
+plt.plot(history.history['accuracy'], label='accuracy')
+plt.plot(history.history['val_accuracy'], label='val_accuracy')
+plt.xlabel('Epoch')
+plt.ylabel('Accuracy')
+plt.legend(loc='lower right')
+plt.show()
+print(f'Test accuracy: {accuracy * 100:.2f}%')
+
+
+
+
+ #Confusion matrix
+from sklearn.metrics import confusion_matrix
+import seaborn as sns
+
+
+
+
+names = [
+    'Alfalfa', 'Corn-notill', 'Corn-mintill', 'Corn', 'Grass-pasture', 'Grass-trees',
+    'Grass-pasture-mowed', 'Hay-windrowed', 'Oats', 'Soybean-notill', 'Soybean-mintill',
+    'Soybean-clean', 'Wheat', 'Woods', 'Buildings Grass Trees Drives', 'Stone Steel Towers'
+]
+
+
+
+
+y_pred = np.argmax(model.predict(X_test), axis=-1)
+y_true = np.argmax(y_test, axis=-1)
+cm = confusion_matrix(y_true, y_pred)
+
+
+plt.figure(figsize=(10, 8))
+sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', xticklabels=names, yticklabels=names)
+plt.xlabel('Predicted')
+plt.ylabel('True')
+plt.show()
+
+
+
+from sklearn.metrics import classification_report
+import numpy as np
+
+
+# Assuming 'model' is your trained model and 'X_test', 'y_test' are your test data
+# Predict on the test set
+y_pred = np.argmax(model.predict(X_test), axis=-1)
+y_true = np.argmax(y_test, axis=-1)
+
+
+# Class names
+names = [
+    'Alfalfa', 'Corn-notill', 'Corn-mintill', 'Corn', 'Grass-pasture', 'Grass-trees',
+    'Grass-pasture-mowed', 'Hay-windrowed', 'Oats', 'Soybean-notill', 'Soybean-mintill',
+    'Soybean-clean', 'Wheat', 'Woods', 'Buildings Grass Trees Drives', 'Stone Steel Towers'
+]
+
+
+# Generate classification report
+report = classification_report(y_true, y_pred, labels=np.arange(len(names)), target_names=names)
+print(report)
